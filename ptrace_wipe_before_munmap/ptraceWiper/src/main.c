@@ -3,6 +3,7 @@
 #include <sys/syscall.h>
 #include <errno.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/ptrace.h>
@@ -32,6 +33,53 @@ ptraceWrapper (
 	}
 
 	return status;
+}
+
+
+int
+writeDataToProcess (
+	const pid_t pid,
+	const uintptr_t addr,
+	const uint8_t * data,
+	const size_t length
+)
+{
+	int bytesLeft = length;
+	uint32_t * dwordPtr = (uint32_t *)data;
+
+	while (bytesLeft > 0)
+	{
+		if (-1 == ptraceWrapper(PTRACE_POKEDATA, pid, addr, (int)(*dwordPtr)))
+		{
+			fprintf(stderr, "Failed to POKEDATA (pid: %d, addr: %p, data: %p:%d, length: %zu, bytesLeft: %d\n",
+				pid, (void*)addr, dwordPtr, (dwordPtr)?*dwordPtr:0, length, bytesLeft);
+		}
+		++dwordPtr;
+		bytesLeft -= sizeof(uint32_t);
+	}
+}
+
+
+int
+readDataFromProcess (
+	const pid_t pid,
+	const uintptr_t addr,
+	const size_t length,
+	uint8_t * const outputBuffer
+)
+{
+	size_t offset = 0;
+	uint32_t * dwordPtr = (uint32_t *)outputBuffer;
+
+	while (offset < length)
+	{
+		if (-1 == ptraceWrapper(PTRACE_PEEKDATA, pid, (int)(addr+offset), NULL))
+		{
+			//fprintf(stderr, "Failed to POKEDATA (pid: %d, addr: %p, data: %p:%d, length: %zu, bytesLeft: %d\n",
+				//pid, (void*)addr, dwordPtr, (dwordPtr)?*dwordPtr:0, length, bytesLeft);
+		}
+		offset += sizeof(uint32_t);
+	}
 }
 
 
@@ -107,7 +155,9 @@ void preAnalyzeSyscall(
 	const pid_t pid
 )
 {
-	int sys_call_nr = 0;
+	long sys_call_nr = 0;
+	long addr = 0;
+	long length = 0;
 	struct user_regs_struct regs;
 
 	memset(&regs, 0, sizeof(regs));
@@ -115,15 +165,26 @@ void preAnalyzeSyscall(
 
 #ifdef __i386__
 		sys_call_nr = regs.orig_eax;
+		addr = regs.ebx;
+		length = regs.ecx;
 #elif __x86_64__
 		sys_call_nr = regs.orig_rax;
+		addr = regs.rbx;
+		length = regs.rcx;
 #else
 #error "Unsupported architecture."
 #endif
 
 	if (SYS_munmap == sys_call_nr)
 	{
-		printf("About to enter munmap()\n");
+		uint8_t zeroBuffer[length];
+		memset(zeroBuffer, 0, sizeof(zeroBuffer));
+
+		printf("About to enter munmap(%p, %ld)\n", (void*)addr, length);
+		printf("Writing zero's to the map\n");
+		readDataFromProcess(pid, addr, length);
+		writeDataToProcess(pid, addr, zeroBuffer, length);
+		readDataFromProcess(pid, addr, length);
 	}
 }
 
@@ -163,11 +224,18 @@ scanSyscalls (
 	int lastSignal = 0;
 	bool isSyscallEntry = true;
 
+	printf("scanSyscalls()\n");
+
 	ptraceWrapper(PTRACE_SETOPTIONS, pid, 0, 
 		PTRACE_O_TRACESYSGOOD | PTRACE_O_TRACEEXIT);
 
+	printf("ptrace options set\n");
+
 	while (!done)
 	{
+		lastSignal = 0;
+		//printf("About to PTRACE_SYSCALL\n");
+		
 		// Continue the process until the next syscall
 		result = ptraceWrapper(PTRACE_SYSCALL, pid, 0, lastSignal);
 		if (-1 == result)

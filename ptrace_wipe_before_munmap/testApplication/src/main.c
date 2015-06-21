@@ -31,6 +31,8 @@ getNewMap (
         return NULL;
     }
 
+    memset(memoryMapPtr, 0xaa, size);
+
     printf("Memory map created at %p\n", memoryMapPtr);
     return memoryMapPtr;
 }
