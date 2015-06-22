@@ -1,5 +1,6 @@
 
 #include <assert.h>
+#include <ctype.h>
 #include <sys/syscall.h>
 #include <errno.h>
 #include <stdbool.h>
@@ -12,6 +13,65 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include "main.h"
+
+
+inline int
+min (
+	const int a,
+	const int b
+)
+{
+	return (a < b)
+		? a
+		: b;
+}
+
+
+void
+printBuffer (
+	const uint8_t * buffer,
+	const size_t length
+)
+{
+	const int NUM_BYTES_IN_ROW = 16;
+	printf("Buffer %p, length: %d\n\n", buffer, length);
+
+	int offset = 0;
+	char line[256];
+	while (offset < length)
+	{
+		memset(line, 0, sizeof(line));
+		int lineOffset = 0;
+		int i = 0;
+		
+		// Print 16 hex bytes in a row
+		for (lineOffset=0, i=offset; 
+			 i<min(offset+NUM_BYTES_IN_ROW, length-offset); 
+			 ++i, lineOffset += 3)
+		{
+			sprintf(line+lineOffset, "%02x ", (0xff & buffer[i]));
+		}
+
+		// Add some spaces
+		int numSpacesToAdd = (3*NUM_BYTES_IN_ROW + 4) - strlen(line);
+		for (i=0; i < numSpacesToAdd; ++i, ++lineOffset)
+		{
+			sprintf(line+lineOffset, "%c", ' ');
+		}
+
+		// Print the char values
+		for (i=offset; 
+			 i<min(offset+NUM_BYTES_IN_ROW, length-offset); 
+			 ++i, lineOffset += 1)
+		{
+			sprintf(line+lineOffset, "%c", (isprint(buffer[i])) ? buffer[i] : '.');
+		}
+
+		offset += NUM_BYTES_IN_ROW;
+
+		printf("%s\n", line);
+	}
+}
 
 
 int
@@ -73,10 +133,11 @@ readDataFromProcess (
 
 	while (offset < length)
 	{
-		if (-1 == ptraceWrapper(PTRACE_PEEKDATA, pid, (int)(addr+offset), NULL))
+		outputBuffer[offset] = ptraceWrapper(PTRACE_PEEKDATA, pid, (int)(addr+offset), 0);
+		if (outputBuffer[offset] == -1 && errno)
 		{
-			//fprintf(stderr, "Failed to POKEDATA (pid: %d, addr: %p, data: %p:%d, length: %zu, bytesLeft: %d\n",
-				//pid, (void*)addr, dwordPtr, (dwordPtr)?*dwordPtr:0, length, bytesLeft);
+			fprintf(stderr, "Failed to PEEKDATA (pid: %d, addr: %p, retvalue: %d, length: %zu, bytesLeft: %d\n",
+				pid, (void*)(addr+offset), outputBuffer[offset], length, length - offset);
 		}
 		offset += sizeof(uint32_t);
 	}
@@ -178,13 +239,24 @@ void preAnalyzeSyscall(
 	if (SYS_munmap == sys_call_nr)
 	{
 		uint8_t zeroBuffer[length];
+		uint8_t outputBuffer[length];
 		memset(zeroBuffer, 0, sizeof(zeroBuffer));
 
 		printf("About to enter munmap(%p, %ld)\n", (void*)addr, length);
 		printf("Writing zero's to the map\n");
-		readDataFromProcess(pid, addr, length);
+
+		memset(outputBuffer, 0xbb, sizeof(outputBuffer));
+		readDataFromProcess(pid, addr, length, outputBuffer);
+		printf("memory prior to writing zeroes\n");
+		printBuffer(outputBuffer, length);
+
+		// Write zeroes into the memory map
 		writeDataToProcess(pid, addr, zeroBuffer, length);
-		readDataFromProcess(pid, addr, length);
+
+		memset(outputBuffer, 0xcc, sizeof(outputBuffer));
+		readDataFromProcess(pid, addr, length, outputBuffer);
+		printf("memory after writing zeroes\n");
+		printBuffer(outputBuffer, length);
 	}
 }
 
