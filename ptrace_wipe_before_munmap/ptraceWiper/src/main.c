@@ -36,7 +36,7 @@ printBuffer (
 	const int NUM_BYTES_IN_ROW = 16;
 	printf("Buffer %p, length: %d\n\n", buffer, length);
 
-	int offset = 0;
+	size_t offset = 0;
 	char line[256];
 	while (offset < length)
 	{
@@ -62,7 +62,7 @@ printBuffer (
 		// Print the char values
 		for (i=offset; 
 			 i<min(offset+NUM_BYTES_IN_ROW, length-offset); 
-			 ++i, lineOffset += 1)
+			 ++i, ++lineOffset)
 		{
 			sprintf(line+lineOffset, "%c", (isprint(buffer[i])) ? buffer[i] : '.');
 		}
@@ -104,19 +104,22 @@ writeDataToProcess (
 	const size_t length
 )
 {
-	int bytesLeft = length;
+	int offset = 0;
 	uint32_t * dwordPtr = (uint32_t *)data;
 
-	while (bytesLeft > 0)
+	while (offset < length)
 	{
-		if (-1 == ptraceWrapper(PTRACE_POKEDATA, pid, addr, (int)(*dwordPtr)))
+		if (-1 == ptraceWrapper(PTRACE_POKETEXT, pid, addr+offset, (int)(*dwordPtr)))
 		{
 			fprintf(stderr, "Failed to POKEDATA (pid: %d, addr: %p, data: %p:%d, length: %zu, bytesLeft: %d\n",
-				pid, (void*)addr, dwordPtr, (dwordPtr)?*dwordPtr:0, length, bytesLeft);
+				pid, (void*)(addr+offset), dwordPtr, (dwordPtr)?*dwordPtr:0, length, length-offset);
+			return -1;
 		}
 		++dwordPtr;
-		bytesLeft -= sizeof(uint32_t);
+		offset += sizeof(uint32_t);
 	}
+
+	return 0;
 }
 
 
@@ -130,17 +133,23 @@ readDataFromProcess (
 {
 	size_t offset = 0;
 	uint32_t * dwordPtr = (uint32_t *)outputBuffer;
+	uint32_t * dwordAddrPtr = (uint32_t *)addr;
 
 	while (offset < length)
 	{
-		outputBuffer[offset] = ptraceWrapper(PTRACE_PEEKDATA, pid, (int)(addr+offset), 0);
-		if (outputBuffer[offset] == -1 && errno)
+		*dwordPtr = ptraceWrapper(PTRACE_PEEKTEXT, pid, (int)(dwordAddrPtr), 0);
+		if (*dwordPtr == -1 && errno)
 		{
 			fprintf(stderr, "Failed to PEEKDATA (pid: %d, addr: %p, retvalue: %d, length: %zu, bytesLeft: %d\n",
-				pid, (void*)(addr+offset), outputBuffer[offset], length, length - offset);
+				pid, (void*)(dwordAddrPtr), *dwordPtr, length, length - offset);
+			return -1;
 		}
 		offset += sizeof(uint32_t);
+		++dwordPtr;
+		++dwordAddrPtr;
 	}
+
+	return 0;
 }
 
 
